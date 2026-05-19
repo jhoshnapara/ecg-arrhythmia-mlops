@@ -1,157 +1,88 @@
-# ECG Arrhythmia Detection — Production MLOps Pipeline
+# ECG Arrhythmia Detection
 
-> **End-to-end MLOps pipeline for detecting cardiac arrhythmias from ECG signals using a 1D CNN, with experiment tracking, model versioning, REST API serving, and drift monitoring.**
+A deep learning model that classifies heartbeats from ECG signals into 5 types, with the full MLOps pipeline around it — experiment tracking, model registry, API serving, and Docker.
 
-**🔗 Live Demo:** [Add your Hugging Face Spaces URL here after deploying]
-**📊 Architecture Diagram:** [See `docs/architecture.png`]
-
----
-
-## Why this project
-
-Cardiac arrhythmias are detected today using rule-based algorithms on Implantable Cardiac Monitors and Holter devices. These produce ~70% false positive rates, leading to alert fatigue in clinical workflows. This project demonstrates a deep learning approach that maintains high sensitivity while reducing false positives — and, more importantly, shows the **production engineering** required to ship such a model: experiment tracking, model registry, containerized serving, and drift monitoring.
+I built this because most ML portfolio projects stop at a Jupyter notebook with `model.fit()` and an accuracy number. The interesting part isn't the model — it's everything you have to build around the model to actually ship it. So that's what this is.
 
 ## Results
 
-| Metric | Value |
-|--------|-------|
-| Overall accuracy | _Fill in after training_ |
-| Macro F1-score | _Fill in after training_ |
-| Precision (V — Ventricular) | _Fill in after training_ |
-| Recall (V — Ventricular) | _Fill in after training_ |
-| Inference latency (CPU, single beat) | _Fill in after benchmarking_ |
-| Model size | _Fill in after training_ |
+Trained on the MIT-BIH Arrhythmia Database. Using the standard patient-level DS1/DS2 split (so test patients are never seen in training).
 
-_Trained on the MIT-BIH Arrhythmia Database (PhysioNet). Patient-level train/test split._
+![Test results — tuned model](docs/run2_tuned.png)
 
-## Architecture
+| Class | Precision | Recall | F1 | Support |
+|---|---|---|---|---|
+| N (Normal) | 0.95 | 0.92 | 0.93 | 44,235 |
+| S (Supraventricular) | 0.03 | 0.03 | 0.03 | 1,837 |
+| V (Ventricular) | 0.60 | **0.83** | 0.70 | 3,220 |
+| F (Fusion) | 0.00 | 0.00 | 0.00 | 388 |
+| Q (Unclassified) | 0.00 | 0.00 | 0.00 | 7 |
+| Accuracy | | | 0.87 | 49,687 |
 
-```
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│  PhysioNet   │───▶│  Data prep   │───▶│   PyTorch    │───▶│   MLflow     │
-│   MIT-BIH    │    │  & features  │    │  CNN training│    │  tracking    │
-└──────────────┘    └──────────────┘    └──────────────┘    └──────┬───────┘
-                                                                    │
-                                                                    ▼
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│   Hugging    │◀───│   Docker     │◀───│   FastAPI    │◀───│   MLflow     │
-│  Face Spaces │    │  container   │    │  inference   │    │  model       │
-│  (Streamlit) │    │              │    │   service    │    │  registry    │
-└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
-                                                │
-                                                ▼
-                                        ┌──────────────┐
-                                        │  Monitoring  │
-                                        │ (Evidently)  │
-                                        └──────────────┘
-```
+The V (ventricular) class is the one that actually matters clinically — missing a ventricular ectopic beat is much worse than a false alarm. I got 83% recall on it.
 
-## Tech Stack
+S and F classes underperform. That's a known issue with single-lead, single-beat classification on this dataset — most published work that does better uses RR-interval features and residual architectures. Documented in `docs/design-decisions.md`.
 
-- **Modeling:** PyTorch, NumPy
-- **Data:** WFDB (PhysioNet's tooling), Pandas, scikit-learn
-- **MLOps:** MLflow (experiment tracking + model registry)
-- **Serving:** FastAPI, Uvicorn, Pydantic
-- **Packaging:** Docker
-- **Monitoring:** Evidently AI (data drift)
-- **Deployment:** Hugging Face Spaces (Streamlit frontend)
+## What I had to figure out
 
-## Key Design Decisions
+**First training run was bad.** The class weights were too aggressive — the model was over-predicting minority classes everywhere. Got it from the confusion matrix: row 1 showed 8,000+ Normal beats being misclassified as something else. Switched to square-root scaling on the class weights, retrained. Normal-class F1 went from 0.87 to 0.93, kept V-class recall at 83%. Both runs logged in MLflow so the comparison is auditable.
 
-These are the questions an interviewer will probe. Each is documented in `docs/design-decisions.md`:
+**Patient-level splits matter.** A random split puts beats from the same patient in train and test. Most papers using random splits report 99%+ accuracy. Use a proper patient-level split (Chazal DS1/DS2) and you get 85-90%. The first one isn't generalizing, the second one is.
 
-1. **Patient-level split, not beat-level.** A naive random split puts beats from the same patient in both train and test, inflating accuracy by ~10-15%. We split by patient ID so the model is evaluated on never-seen subjects — closer to clinical deployment.
-2. **1D CNN over LSTM.** For single-beat classification (~360 samples per beat), CNNs are faster to train, lower latency at inference, and competitive with LSTMs on this dataset. LSTM would matter more for sequence-level (multi-beat) classification.
-3. **Class weighting + focal loss.** The MIT-BIH dataset is heavily imbalanced (~90% Normal beats). We use weighted cross-entropy with class frequencies, and optionally focal loss for the minority classes (V, S).
-4. **Optimize for recall on V/S classes.** Missing a real ventricular ectopic beat is far worse than a false alarm. We tune the decision threshold per-class to maximize recall at acceptable precision.
-5. **MLflow registry as source of truth.** No model is deployed without being registered, tagged with a stage (`Staging`, `Production`), and linked to the exact training run.
+## The stack
 
-## Project Structure
+- **Model:** 1D CNN in PyTorch, ~44K params, runs on CPU
+- **Tracking:** MLflow, with the Model Registry as source of truth for what's deployed
+- **Serving:** FastAPI with auto-generated docs at `/docs`
+- **Container:** Docker, multi-stage build
+- **Monitoring:** Evidently for drift detection
+- **Demo:** Streamlit on Hugging Face Spaces
 
-```
-ecg-arrhythmia-mlops/
-├── src/
-│   ├── data/           # Data loading and preprocessing
-│   ├── models/         # PyTorch model definitions
-│   ├── training/       # Training loop + MLflow integration
-│   ├── inference/      # FastAPI service
-│   └── monitoring/     # Drift detection
-├── configs/            # Hydra-style YAML configs
-├── scripts/            # Data download, training entrypoints
-├── tests/              # pytest tests
-├── docker/             # Dockerfile for serving
-├── docs/               # Architecture, design decisions
-└── notebooks/          # EDA and experiment notebooks
-```
+Inference latency: ~16ms per beat on a Mac Air CPU. Docker adds ~13ms overhead, still under 30ms total.
 
-## Quick Start
+## API
 
-### 1. Setup
+FastAPI service with auto-generated Swagger docs. Three endpoints: `/health`, `/model-info`, `/predict`.
+
+Health check responding with a loaded model:
+
+![/health endpoint](docs/api_swagger_health.png)
+
+Model info endpoint returning current served version:
+
+![/model-info endpoint](docs/api_swagger_model_info.png)
+
+## Running it
 
 ```bash
-git clone <this-repo>
-cd ecg-arrhythmia-mlops
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-```
 
-### 2. Download the data
-
-```bash
 python scripts/download_data.py
-```
-
-This downloads the MIT-BIH Arrhythmia Database (~75 MB) from PhysioNet.
-
-### 3. Preprocess
-
-```bash
 python scripts/preprocess.py
-```
 
-Segments ECG records into individual beats, applies bandpass filtering, and creates train/val/test splits at the patient level. Output: `data/processed/{train,val,test}.npz`.
-
-### 4. Train
-
-```bash
-mlflow ui --port 5000 &   # In one terminal
+mlflow ui --port 5000 &
 python scripts/train.py --config configs/cnn_baseline.yaml
-```
 
-Open `http://localhost:5000` to watch experiments live.
+# Serve locally
+uvicorn src.inference.api:app --host 0.0.0.0 --port 8000
 
-### 5. Serve
-
-```bash
-python scripts/promote_model.py --run-id <best-run-id>  # Register to MLflow model registry
+# Or in Docker
 docker build -t ecg-api -f docker/Dockerfile .
 docker run -p 8000:8000 ecg-api
 ```
 
-Test it:
-```bash
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
-  -d @sample_payload.json
-```
+## Live demo
 
-### 6. Run the Streamlit demo
+Deploying to Hugging Face Spaces next.
 
-```bash
-streamlit run scripts/demo_app.py
-```
+## What I deliberately didn't do
 
-## What's NOT in this project (and why)
+- Kubernetes — Docker alone is enough to show the containerization pattern
+- A/B testing infra, multi-region failover — out of scope for a portfolio project
+- FHIR/HL7 integration — would matter for real hospital deployment
+- FDA validation — this is a research demo, not a medical product
 
-Production-ready ML systems are large. To keep this project focused, the following are documented as "future work" rather than implemented:
+## Data
 
-- Kubernetes orchestration (Docker is enough to demonstrate the pattern)
-- Multi-region failover
-- A/B testing infrastructure
-- FHIR / HL7 integration (would be needed for real EHR deployment)
-
-The point of this repo is to demonstrate end-to-end ownership of an ML system, not to ship a hospital-grade product.
-
-## License
-
-MIT. Data is from PhysioNet, governed by the [PhysioNet Credentialed Health Data License](https://physionet.org/content/mitdb/).
+[MIT-BIH Arrhythmia Database](https://physionet.org/content/mitdb/) from PhysioNet. 48 half-hour two-channel ECG recordings, 360 Hz sampling rate, beats annotated by cardiologists.
