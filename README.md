@@ -1,5 +1,7 @@
 # ECG Arrhythmia Detection
 
+**Live demo:** https://huggingface.co/spaces/jhoshnapara/ecg-arrhythmia-cnn
+
 5-class heartbeat classifier (Normal, Supraventricular, Ventricular, Fusion, Unclassified) trained on MIT-BIH. Includes the full serving pipeline: MLflow tracking, FastAPI inference, Docker.
 
 ## Results
